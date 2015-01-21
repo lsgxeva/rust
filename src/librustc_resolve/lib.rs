@@ -65,10 +65,10 @@ use syntax::ast::{DefId, Expr, ExprAgain, ExprBreak, ExprField};
 use syntax::ast::{ExprClosure, ExprForLoop, ExprLoop, ExprWhile, ExprMethodCall};
 use syntax::ast::{ExprPath, ExprQPath, ExprStruct, FnDecl};
 use syntax::ast::{ForeignItemFn, ForeignItemStatic, Generics};
-use syntax::ast::{Ident, ImplItem, Item, ItemConst, ItemEnum, ItemFn};
-use syntax::ast::{ItemForeignMod, ItemImpl, ItemMac, ItemMod, ItemStatic};
-use syntax::ast::{ItemStruct, ItemTrait, ItemTy, Local, LOCAL_CRATE};
-use syntax::ast::{MethodImplItem, Mod, Name, NodeId};
+use syntax::ast::{Ident, ImplItem, Item, ItemConst, ItemEnum, ItemExternCrate};
+use syntax::ast::{ItemFn, ItemForeignMod, ItemImpl, ItemMac, ItemMod, ItemStatic};
+use syntax::ast::{ItemStruct, ItemTrait, ItemTy, ItemUse};
+use syntax::ast::{Local, MethodImplItem, Mod, Name, NodeId};
 use syntax::ast::{Pat, PatEnum, PatIdent, PatLit};
 use syntax::ast::{PatRange, PatStruct, Path};
 use syntax::ast::{PolyTraitRef, PrimTy, SelfExplicit};
@@ -1139,7 +1139,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
     }
 
     fn get_trait_name(&self, did: DefId) -> Name {
-        if did.krate == LOCAL_CRATE {
+        if did.krate == ast::LOCAL_CRATE {
             self.ast_map.expect_item(did.node).ident.name
         } else {
             csearch::get_trait_name(&self.session.cstore, did)
@@ -1748,10 +1748,6 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                     import_span: Span,
                                     name: Name,
                                     namespace: Namespace) {
-        if self.session.features.borrow().import_shadowing {
-            return
-        }
-
         debug!("check_for_conflicting_import: {}; target exists: {}",
                token::get_name(name).get(),
                target.is_some());
@@ -1791,10 +1787,6 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                                      &ImportResolution,
                                                      import_span: Span,
                                                      name: Name) {
-        if self.session.features.borrow().import_shadowing {
-            return
-        }
-
         // First, check for conflicts between imports and `extern crate`s.
         if module.external_module_children
                  .borrow()
@@ -1888,10 +1880,6 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                                    module: &Module,
                                                    name: Name,
                                                    span: Span) {
-        if self.session.features.borrow().import_shadowing {
-            return
-        }
-
         if module.external_module_children.borrow().contains_key(&name) {
             self.session
                 .span_err(span,
@@ -1906,10 +1894,6 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                                              module: &Module,
                                                              name: Name,
                                                              span: Span) {
-        if self.session.features.borrow().import_shadowing {
-            return
-        }
-
         if module.external_module_children.borrow().contains_key(&name) {
             self.session
                 .span_err(span,
@@ -2982,9 +2966,9 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 });
             }
 
-           ItemMac(..) => {
+            ItemExternCrate(_) | ItemUse(_) | ItemMac(..) => {
                 // do nothing, these are just around to be encoded
-           }
+            }
         }
     }
 
@@ -3522,6 +3506,26 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 debug!("(resolving block) found anonymous module, moving \
                         down");
                 self.current_module = anonymous_module.clone();
+            }
+        }
+
+        // Check for imports appearing after non-item statements.
+        let mut found_non_item = false;
+        for statement in block.stmts.iter() {
+            if let ast::StmtDecl(ref declaration, _) = statement.node {
+                if let ast::DeclItem(ref i) = declaration.node {
+                    match i.node {
+                        ItemExternCrate(_) | ItemUse(_) if found_non_item => {
+                            span_err!(self.session, i.span, E0154,
+                                "imports are not allowed after non-item statements");
+                        }
+                        _ => {}
+                    }
+                } else {
+                    found_non_item = true
+                }
+            } else {
+                found_non_item = true;
             }
         }
 
